@@ -10,8 +10,8 @@
 --   2. set search_path = '' and every object schema qualified, so a caller
 --      cannot swap in its own table or operator.
 --   3. EXECUTE revoked from PUBLIC, then granted to named roles only.
---   4. The function re-checks who is calling and what they may touch.
---      It never trusts an argument for identity.
+--   4. The function re-checks who is calling and what they may touch,
+--      including the tenant pin. It never trusts an argument for identity.
 --   5. No dynamic SQL. Arguments are only ever used as values.
 --   6. It returns the least it can: void, or one boolean.
 --
@@ -77,7 +77,9 @@ $$;
 -- The scheduler cannot read invoices, but it should not book more work on a
 -- job with an unpaid invoice. It gets a single boolean. A job outside the
 -- caller's tenants answers false, the same as a job with nothing owing, so
--- the function does not reveal whether such a job exists.
+-- the function does not reveal whether such a job exists. The restrictive
+-- pin policies in 0004 apply to app_agent, not to the owner this function
+-- runs as, so the tenant pin has to be re-checked here by hand.
 create function app.job_has_unpaid_invoice(p_job_id uuid) returns boolean
   language sql stable
   security definer
@@ -95,6 +97,10 @@ create function app.job_has_unpaid_invoice(p_job_id uuid) returns boolean
           select a.tenant_id
           from app.agent_tenants a
           where a.agent_role = app.caller_role()
+        )
+        and (
+          app.pinned_tenant_id() is null
+          or j.tenant_id = app.pinned_tenant_id()
         )
     )
   $$;

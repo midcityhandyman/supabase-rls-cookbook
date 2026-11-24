@@ -1,7 +1,7 @@
 -- 050_security_definer.sql
 -- The two SECURITY DEFINER functions and the checklist they follow.
 begin;
-select plan(24);
+select plan(26);
 \ir ../seed/seed.sql
 
 -- ------------------------------------------------------------- checklist
@@ -121,6 +121,24 @@ select throws_ok(
   'permission denied for table invoices',
   'the function did not widen the scheduler''s own access'
 );
+reset role;
+
+-- The function runs as its owner, which the restrictive pin policies do not
+-- cover, so it has to honour the pin itself. Give the scheduler a second
+-- tenant, then pin the first one.
+insert into app.agent_tenants (agent_role, tenant_id)
+values ('agent_scheduler', '10000000-0000-4000-a000-000000000002');
+set local role agent_scheduler;
+select is(
+  app.job_has_unpaid_invoice('40000000-0000-4000-a000-000000000021'), true,
+  'with no pin, a job in a second assigned tenant is answered'
+);
+set local app.tenant_id = '10000000-0000-4000-a000-000000000001';
+select is(
+  app.job_has_unpaid_invoice('40000000-0000-4000-a000-000000000021'), false,
+  'with a pin, a job in the other assigned tenant answers false'
+);
+set local app.tenant_id = '';
 reset role;
 
 set local role agent_intake;

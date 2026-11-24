@@ -11,10 +11,12 @@ and so that a careless migration fails fast in CI before the database job.
 from __future__ import annotations
 
 import re
+import subprocess
 import sys
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "static_checks"))
@@ -275,6 +277,41 @@ class TapParser(unittest.TestCase):
     def test_psql_errors_are_kept(self):
         notes = db.parse_tap("1..1\npsql:x.sql:3: ERROR:  boom\n")[3]
         self.assertEqual(len(notes), 1)
+
+
+class DemoNeedsNoPgtap(unittest.TestCase):
+    """The README says the demo needs no pgTAP and no network. Hold it to that."""
+
+    def commands_for(self, with_pgtap: bool) -> list[str]:
+        seen: list[str] = []
+
+        def fake_run(cmd, check=True):
+            seen.append(" ".join(cmd))
+            out = "rls-cookbook-pg" if cmd[:2] == ["docker", "ps"] else "0"
+            return subprocess.CompletedProcess(cmd, 0, stdout=out)
+
+        patches = [
+            mock.patch.object(db, "run", fake_run),
+            mock.patch.object(db, "PSQL_MODE", False),
+            mock.patch.object(db, "CONTAINER", "rls-cookbook-pg"),
+            mock.patch.object(db.shutil, "which", lambda name: name),
+            mock.patch("builtins.print"),
+        ]
+        for patch in patches:
+            patch.start()
+            self.addCleanup(patch.stop)
+        db.rebuild("some_db", with_pgtap=with_pgtap)
+        return seen
+
+    def test_demo_rebuild_never_installs_or_creates_pgtap(self):
+        seen = self.commands_for(with_pgtap=False)
+        self.assertTrue(any("create database some_db" in c for c in seen))
+        self.assertFalse([c for c in seen if "pgtap" in c.lower()], seen)
+
+    def test_test_rebuild_installs_and_creates_pgtap(self):
+        seen = self.commands_for(with_pgtap=True)
+        self.assertTrue(any("apt-get install" in c and "pgtap" in c for c in seen))
+        self.assertTrue(any("create extension if not exists pgtap" in c for c in seen))
 
 
 if __name__ == "__main__":

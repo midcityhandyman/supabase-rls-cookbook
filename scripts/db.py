@@ -92,7 +92,9 @@ def container_running() -> bool:
     return CONTAINER in proc.stdout.split()
 
 
-def up() -> None:
+def up(need_pgtap: bool = True) -> None:
+    """Start (or reach) Postgres. pgTAP is installed only when asked for:
+    the tests need it, the demo and the audit do not."""
     if PSQL_MODE:
         psql("postgres", ["-qAt", "-c", "select 1"])
         print(f"psql mode: using the server at {os.environ['PGHOST']}")
@@ -120,6 +122,9 @@ def up() -> None:
         time.sleep(1)
     else:
         raise DbError("postgres did not become ready in 60 seconds")
+    if not need_pgtap:
+        print("postgres is ready")
+        return
     have = psql(
         "postgres",
         ["-qAt", "-c", "select count(*) from pg_available_extensions where name = 'pgtap'"],
@@ -148,7 +153,7 @@ def migration_files() -> list[str]:
 
 def rebuild(db: str, with_pgtap: bool = False) -> None:
     """Drop and recreate a database, then apply every migration in order."""
-    up()
+    up(need_pgtap=with_pgtap)
     psql("postgres", ["-q", "-c", f"drop database if exists {db} with (force)"])
     psql("postgres", ["-q", "-c", f"create database {db}"])
     for name in migration_files():

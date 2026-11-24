@@ -11,8 +11,10 @@
 --   3. Every policy names its command and its roles. Nothing applies to
 --      PUBLIC. Humans (authenticated) and agents (app_agent) get separate
 --      policies, so agents never depend on the auth schema.
---   4. Helper calls are wrapped as "in (select helper())" so the planner
---      evaluates them once per statement, not once per row.
+--   4. Helpers that take no row argument are wrapped as
+--      "in (select helper())" so the planner evaluates them once per
+--      statement. app.user_has_role(tenant_id, ...) takes the row's tenant
+--      and the pin check is called bare, so those run per row.
 --   5. Every UPDATE policy has USING and WITH CHECK.
 --   6. A RESTRICTIVE policy lets an agent that serves several tenants pin
 --      one tenant for the current transaction:
