@@ -1,0 +1,18 @@
+# local config
+.env
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# editors and OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# scratch output
+demo/output_static.txt
+*.log

@@ -1,0 +1,193 @@
+RLS cookbook demo: live run against Postgres (demo/demo.sql)
+
+==========================================================================
+1. Same tables, different role, different rows
+==========================================================================
+The database holds 3 tenants, 5 customers, 5 jobs, 4 invoices.
+Each agent connects as its own database role.
+
+  acting_as   |           tenants           | customers |  jobs  | invoices | audit_log 
+--------------+-----------------------------+-----------+--------+----------+-----------
+ agent_intake | north-sample, south-example | 4 rows    | 4 rows | denied   | denied
+
+    acting_as    |   tenants    | customers |  jobs  | invoices | audit_log 
+-----------------+--------------+-----------+--------+----------+-----------
+ agent_scheduler | north-sample | 2 rows    | 2 rows | denied   | denied
+
+   acting_as   |    tenants    | customers |  jobs  | invoices | audit_log 
+---------------+---------------+-----------+--------+----------+-----------
+ agent_billing | south-example | 2 rows    | 2 rows | 1 rows   | denied
+
+   acting_as    |           tenants           | customers |  jobs  | invoices | audit_log 
+----------------+-----------------------------+-----------+--------+----------+-----------
+ agent_reporter | north-sample, south-example | 4 rows    | 4 rows | 3 rows   | 2 rows
+
+
+A signed in human: the owner of north-sample, then a user with no membership.
+
+   acting_as   |   tenants    | customers |  jobs  | invoices | audit_log 
+---------------+--------------+-----------+--------+----------+-----------
+ authenticated | north-sample | 2 rows    | 2 rows | 2 rows   | 1 rows
+
+   acting_as   | tenants | customers |  jobs  | invoices | audit_log 
+---------------+---------+-----------+--------+----------+-----------
+ authenticated | none    | 0 rows    | 0 rows | 0 rows   | 0 rows
+
+
+==========================================================================
+2. Grants pick the command, policies pick the rows, column grants pick
+the columns
+==========================================================================
+
+                      attempt                      |                                                   result                                                    
+---------------------------------------------------+-------------------------------------------------------------------------------------------------------------
+ intake: add customer to assigned tenant           | ok (1 row)
+ intake: add customer to unassigned tenant         | refused: new row violates row-level security policy for table "customers"
+ intake: job pointing at another tenant's customer | refused: insert or update on table "jobs" violates foreign key constraint "jobs_tenant_id_customer_id_fkey"
+ intake: delete customers                          | refused: permission denied for table customers
+
+                   attempt                    |                  result                   
+----------------------------------------------+-------------------------------------------
+ scheduler: set status and date on own tenant | ok (1 row)
+ scheduler: rename a job                      | refused: permission denied for table jobs
+ scheduler: update a job in another tenant    | ok (0 rows)
+
+               attempt               |                                  result                                  
+-------------------------------------+--------------------------------------------------------------------------
+ billing: mark own invoice paid      | ok (1 row)
+ billing: change an invoice amount   | refused: permission denied for table invoices
+ billing: invoice for another tenant | refused: new row violates row-level security policy for table "invoices"
+
+
+==========================================================================
+3. Tenant pin: a multi tenant agent narrows itself to one tenant
+==========================================================================
+
+  pin   | customers_visible 
+--------+-------------------
+ no pin | 5 rows
+
+      pin      | customers_visible 
+---------------+-------------------
+ south-example | 2 rows
+
+             attempt             |                                             result                                              
+---------------------------------+-------------------------------------------------------------------------------------------------
+ pinned to south, write to north | refused: new row violates row-level security policy "customers_agent_pin" for table "customers"
+
+
+==========================================================================
+4. The read only agent
+==========================================================================
+
+    tenant     | invoices | total_cents 
+---------------+----------+-------------
+ north-sample  |        2 |       27500
+ south-example |        1 |       22000
+
+              attempt               |                      result                       
+------------------------------------+---------------------------------------------------
+ reporter: insert                   | refused: permission denied for table customers
+ reporter: update                   | refused: permission denied for table jobs
+ reporter: delete                   | refused: permission denied for table invoices
+ reporter: write via audit function | refused: permission denied for function log_event
+
+
+==========================================================================
+5. SECURITY DEFINER, done safely
+==========================================================================
+
+                   attempt                   |                                            result                                             
+---------------------------------------------+-----------------------------------------------------------------------------------------------
+ intake: insert into audit_log directly      | refused: permission denied for table audit_log
+ intake: app.log_event for assigned tenant   | ok (1 row)
+ intake: app.log_event for unassigned tenant | refused: role agent_intake may not log events for tenant 10000000-0000-4000-a000-000000000003
+
+
+The row was written by the function owner, but the actor is the real caller:
+
+    tenant    |    actor     |      action      |       detail       
+--------------+--------------+------------------+--------------------
+ north-sample | agent_intake | customer.created | {"source": "demo"}
+
+
+The scheduler cannot read invoices, but may ask one yes or no question:
+
+                     job                      | has_unpaid 
+----------------------------------------------+------------
+ north job with a sent invoice                | t
+ north job with a paid invoice                | f
+ west job with a sent invoice (not my tenant) | f
+
+              attempt              |                    result                     
+-----------------------------------+-----------------------------------------------
+ scheduler: read invoices directly | refused: permission denied for table invoices
+
+
+==========================================================================
+6. Grant audit
+==========================================================================
+Who can do what (rls_audit.role_matrix):
+
+  table_name   |     grantee     |              privileges               
+---------------+-----------------+---------------------------------------
+ agent_tenants | app_agent       | SELECT
+ agent_tenants | app_definer     | SELECT
+ audit_log     | app_definer     | INSERT
+ audit_log     | app_readonly    | SELECT
+ audit_log     | authenticated   | SELECT
+ customers     | agent_intake    | INSERT
+ customers     | app_agent       | SELECT
+ customers     | authenticated   | DELETE, INSERT, SELECT, UPDATE
+ invoices      | agent_billing   | INSERT, SELECT, UPDATE(status)
+ invoices      | app_definer     | SELECT
+ invoices      | app_readonly    | SELECT
+ invoices      | authenticated   | SELECT
+ jobs          | agent_intake    | INSERT
+ jobs          | agent_scheduler | UPDATE(scheduled_for), UPDATE(status)
+ jobs          | app_agent       | SELECT
+ jobs          | app_definer     | SELECT
+ jobs          | authenticated   | INSERT, SELECT, UPDATE
+ memberships   | authenticated   | SELECT
+ tenants       | app_agent       | SELECT
+ tenants       | authenticated   | SELECT
+
+
+SECURITY DEFINER inventory (rls_audit.definer_functions):
+
+        function_signature        | function_owner | owner_is_privileged | search_path_is_set | public_can_execute 
+----------------------------------+----------------+---------------------+--------------------+--------------------
+ app.job_has_unpaid_invoice(uuid) | app_definer    | f                   | t                  | f
+ app.log_event(uuid,text,jsonb)   | app_definer    | f                   | t                  | f
+
+
+Findings on this install (rls_audit.findings):
+
+ findings 
+----------
+        0
+
+
+Now plant four common mistakes inside a transaction and audit again:
+a new table with no RLS that is granted to PUBLIC,
+a SECURITY DEFINER function with defaults,
+a write grant on the read only group,
+BYPASSRLS on an agent.
+
+ severity |        check_name        |  object_name  |                                 detail                                 
+----------+--------------------------+---------------+------------------------------------------------------------------------
+ high     | agent_is_privileged      | agent_intake  | agent role is a superuser, has BYPASSRLS, or can create roles
+ high     | definer_no_search_path   | app.sloppy()  | SECURITY DEFINER without a fixed search_path
+ high     | definer_privileged_owner | app.sloppy()  | owner postgres is a superuser or has BYPASSRLS
+ high     | definer_public_execute   | app.sloppy()  | SECURITY DEFINER function executable by PUBLIC
+ high     | public_table_grant       | app.leaky     | PUBLIC holds SELECT
+ high     | readonly_role_can_write  | app.customers | app_readonly is read only (app_readonly) but holds a write privilege
+ high     | readonly_role_can_write  | app.customers | agent_reporter is read only (app_readonly) but holds a write privilege
+ high     | rls_disabled             | app.leaky     | row level security is not enabled
+
+
+Rolled back. Findings after rollback:
+
+ findings 
+----------
+        0
