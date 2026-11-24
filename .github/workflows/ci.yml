@@ -1,0 +1,55 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  static:
+    name: static checks (no database)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Static checks
+        run: python -m unittest discover -s static_checks -v
+
+  pgtap:
+    name: pgTAP against a Postgres service
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # Setting PGHOST puts scripts/db.py in psql mode: it uses psql from PATH
+      # against this service instead of starting its own container.
+      PGHOST: localhost
+      PGPORT: "5432"
+      PGUSER: postgres
+      PGPASSWORD: postgres
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install pgTAP into the service container
+        run: >-
+          docker exec "${{ job.services.postgres.id }}" bash -c
+          "apt-get update -qq && apt-get install -y -qq postgresql-16-pgtap"
+      - name: Make sure psql is available
+        run: command -v psql || (sudo apt-get update -qq && sudo apt-get install -y -qq postgresql-client)
+      - name: pgTAP tests
+        run: python scripts/db.py test
+      - name: Demo walkthrough runs clean
+        run: python demo/run_demo.py
