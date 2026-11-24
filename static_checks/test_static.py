@@ -259,7 +259,7 @@ class RepositoryHygiene(unittest.TestCase):
         for rel in ("README.md", ".gitignore", ".env.example", "demo/output.txt",
                     "demo/demo.sql", "queries/grant_audit.sql", "seed/seed.sql"):
             self.assertTrue((ROOT / rel).is_file(), rel)
-        self.assertFalse((ROOT / "LICENSE").exists())
+        self.assertTrue((ROOT / "LICENSE").is_file())
 
 
 class TapParser(unittest.TestCase):
